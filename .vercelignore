@@ -2,3 +2,5 @@ tests/
 supabase-schema.sql
 README.md
 plan.md
+
+database/

@@ -1,0 +1,75 @@
+begin;
+create temporary table mb_test_ids(a uuid,b uuid,c uuid,g uuid,p uuid,code text);
+insert into mb_test_ids(a,b,c) values(gen_random_uuid(),gen_random_uuid(),gen_random_uuid());
+insert into auth.users(id) select a from mb_test_ids union all select b from mb_test_ids union all select c from mb_test_ids;
+grant all on mb_test_ids to authenticated;
+set local role authenticated;
+do $$
+declare t record; r jsonb; denied boolean;
+begin
+ select * into t from mb_test_ids;
+ perform set_config('request.jwt.claim.sub',t.a::text,true);
+ r:=public.moyeobom('create_group','{"name":"ROLLBACK 모임"}');
+ update mb_test_ids set g=(r->>'id')::uuid;
+ r:=public.moyeobom('snapshot');
+ if jsonb_array_length(r->'groups')<>1 then raise exception 'owner group missing'; end if;
+ update mb_test_ids set code=r->'groups'->0->>'invite_code';
+ select * into t from mb_test_ids;
+ r:=public.moyeobom('create_poll',jsonb_build_object('group_id',t.g,'title','테스트','dates',jsonb_build_array('2099-01-03'),'start_min',540,'end_min',660,'duration_min',60,'activities',jsonb_build_array('산책','카페'),'deadline','2099-01-02T12:00:00+09:00'));
+ update mb_test_ids set p=(r->>'id')::uuid;
+ select * into t from mb_test_ids;
+ perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'slots',jsonb_build_array('2099-01-03|540','2099-01-03|570'),'activities',jsonb_build_array('산책'),'unavailable',false));
+ -- Stranger cannot read, vote or finalize.
+ perform set_config('request.jwt.claim.sub',t.c::text,true);
+ r:=public.moyeobom('snapshot');
+ if jsonb_array_length(r->'groups')<>0 or jsonb_array_length(r->'votes')<>0 then raise exception 'stranger data leak'; end if;
+ denied:=false; begin perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p)); exception when insufficient_privilege then denied:=true; end;
+ if not denied then raise exception 'stranger vote allowed'; end if;
+ denied:=false; begin perform count(*) from public.mb_groups; exception when insufficient_privilege then denied:=true; end;
+ if not denied then raise exception 'direct table access allowed'; end if;
+ -- Member joins and only updates their own response; supplied user_id ignored.
+ perform set_config('request.jwt.claim.sub',t.b::text,true);
+ r:=public.moyeobom('preview_join',jsonb_build_object('code',t.code));
+ if r->>'name'<>'ROLLBACK 모임' then raise exception 'join preview mismatch'; end if;
+ perform public.moyeobom('join_group',jsonb_build_object('code',t.code));
+ perform public.moyeobom('join_group',jsonb_build_object('code',t.code));
+ r:=public.moyeobom('snapshot');
+ if jsonb_array_length(r->'members')<>2 or r->'groups'->0->>'invite_code' is not null then raise exception 'membership/invite leak'; end if;
+ denied:=false; begin perform public.moyeobom('close',jsonb_build_object('poll_id',t.p)); exception when insufficient_privilege then denied:=true; end;
+ if not denied then raise exception 'member close allowed'; end if;
+ denied:=false; begin perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'slots',jsonb_build_array('2099-01-03|541'),'activities','[]'::jsonb)); exception when raise_exception then denied:=true; end;
+ if not denied then raise exception 'invalid slot allowed'; end if;
+ perform public.moyeobom('add_activity',jsonb_build_object('poll_id',t.p,'activity','보드게임'));
+ perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'user_id',t.a,'slots',jsonb_build_array('2099-01-03|540','2099-01-03|570'),'activities',jsonb_build_array('보드게임'),'unavailable',false));
+ r:=public.moyeobom('snapshot');
+ if jsonb_array_length(r->'votes')<>2 then raise exception 'member overwrote owner vote'; end if;
+ perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'slots','[]'::jsonb,'activities','[]'::jsonb,'unavailable',true));
+ r:=public.moyeobom('snapshot');
+ if jsonb_array_length(r->'votes')<>2 then raise exception 'duplicate response'; end if;
+ -- Owner rotates code; old code invalid, existing membership retained.
+ perform set_config('request.jwt.claim.sub',t.a::text,true);
+ perform public.moyeobom('rotate_code',jsonb_build_object('group_id',t.g));
+ denied:=false; begin perform public.moyeobom('preview_join',jsonb_build_object('code',t.code)); exception when raise_exception then denied:=true; end;
+ if not denied then raise exception 'old code still valid'; end if;
+ perform public.moyeobom('close',jsonb_build_object('poll_id',t.p));
+ perform set_config('request.jwt.claim.sub',t.b::text,true);
+ denied:=false; begin perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'slots','[]'::jsonb,'activities','[]'::jsonb,'unavailable',true)); exception when raise_exception then denied:=true; end;
+ if not denied then raise exception 'closed vote allowed'; end if;
+ perform set_config('request.jwt.claim.sub',t.a::text,true);
+ perform public.moyeobom('reopen',jsonb_build_object('poll_id',t.p,'deadline','2099-01-02T13:00:00+09:00'));
+ perform public.moyeobom('finalize',jsonb_build_object('poll_id',t.p,'slot','2099-01-03|540','activity','산책','place','공원'));
+ perform set_config('request.jwt.claim.sub',t.b::text,true);
+ r:=public.moyeobom('snapshot');
+ if r->'polls'->0->>'status'<>'finalized' or r->'polls'->0->>'place'<>'공원' then raise exception 'finalization not shared'; end if;
+ denied:=false; begin perform public.moyeobom('vote',jsonb_build_object('poll_id',t.p,'slots','[]'::jsonb,'activities','[]'::jsonb,'unavailable',true)); exception when raise_exception then denied:=true; end;
+ if not denied then raise exception 'finalized vote allowed'; end if;
+end $$;
+reset role;
+set local role anon;
+do $$ declare denied boolean:=false; begin
+ begin perform public.moyeobom('snapshot'); exception when insufficient_privilege then denied:=true; end;
+ if not denied then raise exception 'anon rpc allowed'; end if;
+end $$;
+reset role;
+select 'PASS: three-user isolation, join/idempotency, owner-only management, self-only responses, invalid slots, closed/finalized writes, code rotation, shared finalization, anon denial' as result;
+rollback;
