@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"test":"cd .. && node tests/cloud-ui.cjs"},"devDependencies":{"jsdom":"26.1.0"}}
