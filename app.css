@@ -19,3 +19,5 @@
 
 /* Member colors supplement names; private event bodies stay gray. */
 .cal-person-key{display:inline-flex;align-items:center;gap:6px}.cal-person-key i{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--member-color)}.cal-chip.by-member,.cal-event.by-member{border-left:4px solid var(--member-color)}.cal-chip.by-member:not(.private),.cal-event.by-member:not(.private){background:color-mix(in srgb,var(--member-color) 12%,white);color:#332d43}.cal-owner-label{font-size:13px;font-weight:800;color:var(--member-color);margin-bottom:4px}
+
+.member-calendar{cursor:pointer}.member-calendar:hover{text-decoration:underline}.slot.calendar-conflict{border:2px solid #b46b18}.slot-conflict-label{display:block;font-size:11px;color:#97560d}.slot[aria-pressed=true] .slot-conflict-label{color:#fff2ce}

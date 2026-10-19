@@ -1,0 +1,48 @@
+const {JSDOM}=require('jsdom');const fs=require('fs');const assert=require('node:assert/strict');const core=require('../group-core.js');
+const p={id:'p1',group_id:'g1',title:'주말 약속',dates:['2099-01-03','2099-01-04'],start_min:540,end_min:660,duration_min:60,activities:['산책','카페'],deadline:'2099-01-02T12:00:00+09:00',status:'open'};
+const ms=[{user_id:'a',group_id:'g1',nickname:'예은'},{user_id:'b',group_id:'g1',nickname:'<img src=x onerror=alert(1)>'}];
+let calendarRows=[],calendarFail=false;let rows={groups:[{id:'g1',name:'친구 모임',owner_id:'a',invite_code:'ABCDEF123456'}],members:ms,polls:[p],votes:[{poll_id:'p1',user_id:'b',slots:['2099-01-03|540','2099-01-03|570'],activities:['산책'],unavailable:false}]};
+let session={user:{id:'a',user_metadata:{nickname:'예은'}}},fail=false,callback=()=>{};let calls=[];
+const dom=new JSDOM(fs.readFileSync('index.html','utf8'),{url:'https://example.test',runScripts:'outside-only'}),w=dom.window;w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};w.scrollTo=()=>{};w.confirm=()=>true;w.MOYEOBOM_CONFIG={url:'https://example.test',publishableKey:'test'};
+w.supabase={createClient:()=>({auth:{getSession:async()=>({data:{session}}),onAuthStateChange:fn=>{callback=fn;},signOut:async()=>{session=null;callback('SIGNED_OUT',null);return{};},signInWithPassword:async()=>({data:{user:{id:'a',user_metadata:{nickname:'예은'}}}})},rpc:async(_,args)=>{calls.push(args);if(_==='moyeobom_calendar'){if(calendarFail)return{error:{message:'network'}};return{data:calendarRows};}if(args.action==='snapshot')return{data:JSON.parse(JSON.stringify(rows))};if(fail)return{error:{message:'network failed'}};const x=args.payload;if(args.action==='vote'){rows.votes=rows.votes.filter(v=>v.user_id!=='a');rows.votes.push({...x,user_id:'a'});}if(args.action==='finalize'){Object.assign(p,{status:'finalized',final_slot:x.slot,final_activity:x.activity,place:x.place});}if(args.action==='preview_join')return{data:{id:'g1',name:'친구 모임'}};return{data:{id:'g1'}};}})};
+w.eval(fs.readFileSync('calendar.js','utf8'));w.eval(fs.readFileSync('group-core.js','utf8'));w.eval(fs.readFileSync('app.js','utf8'));
+const tick=()=>new Promise(r=>setTimeout(r,20));const click=async(sel)=>{assert(w.document.querySelector(sel),sel);w.document.querySelector(sel).click();await tick();};
+(async()=>{
+ await tick();
+ assert(w.document.querySelector('#welcome-guide').open);await click('.guide-close');
+ assert.equal(w.localStorage.getItem('moyeobom-guide-v1'),'seen');
+ await click('[data-guide-open]');assert(w.document.querySelector('#welcome-guide').open);await click('.guide-close');
+ console.log('PASS first-visit guide, acknowledgement and reopening');
+ assert(w.document.body.textContent.includes('내가 응답할 투표'));console.log('PASS pending-response dashboard');
+ await click('[data-action=poll]');assert.equal(w.document.querySelectorAll('img').length,0);assert(w.document.body.textContent.includes('<img src=x'));console.log('PASS member names escaped');
+ 
+ calendarRows=[{id:'private',kind:'personal',title:null,starts_at:'2099-01-03T09:15:00+09:00',ends_at:'2099-01-03T09:30:00+09:00'}];await click('[data-action=refresh]');assert.equal(w.document.querySelectorAll('.calendar-conflict').length,1);assert(!w.document.querySelector('.calendar-conflict').disabled);assert(!w.document.querySelector('[data-slot="2099-01-03|570"]').classList.contains('calendar-conflict'));console.log('PASS overlap boundaries, private busy events, selection remains enabled');
+ await click('[data-action=member-calendar][data-member=b]');assert.equal(w.document.querySelector('#cal-person').value,'b');await click('[data-action=home]');await click('[data-action=poll]');console.log('PASS nickname opens selected member calendar');
+ const slotButtons=()=>[...w.document.querySelectorAll('[data-slot]')];
+ const event=(target,type,props={})=>{const e=new w.MouseEvent(type,{bubbles:true,detail:1,button:0});for(const [k,v] of Object.entries(props))Object.defineProperty(e,k,{value:v});target.dispatchEvent(e);};
+ const tap=(b,clickType)=>{event(b,'pointerdown',{pointerType:'touch'});event(b,'pointerup',{pointerType:'touch'});event(b,'click',clickType?{pointerType:clickType}:{});};
+ let bs=slotButtons();tap(bs[0],'mouse');tap(bs[1],'touch');tap(bs[2]);assert.equal(w.document.querySelectorAll('[data-slot][aria-pressed=true]').length,3);
+ tap(bs[1],'mouse');assert.equal(bs[0].getAttribute('aria-pressed'),'true');assert.equal(bs[1].getAttribute('aria-pressed'),'false');assert.equal(bs[2].getAttribute('aria-pressed'),'true');
+ await click('[data-action=date][data-id="2099-01-04"]');tap(slotButtons()[1],'touch');
+ await click('[data-action=date][data-id="2099-01-03"]');assert.equal(w.document.querySelectorAll('[data-slot][aria-pressed=true]').length,2);assert(w.document.querySelector('#selection-count').textContent.includes('3'));
+ console.log('PASS mobile multiple taps, deselect and cross-date persistence');
+ await click('[data-action=clear-date]');bs=slotButtons();
+ event(bs[0],'pointerdown',{pointerType:'mouse'});event(bs[0],'pointerup',{pointerType:'mouse'});event(bs[0],'click');assert.equal(bs[0].getAttribute('aria-pressed'),'true');
+ event(bs[0],'pointerdown',{pointerType:'mouse'});event(bs[0],'pointerup',{pointerType:'mouse'});event(bs[0],'click');assert.equal(bs[0].getAttribute('aria-pressed'),'false');
+ event(bs[0],'pointerdown',{pointerType:'mouse'});event(bs[1],'pointerover',{pointerType:'mouse'});event(bs[1],'pointerup',{pointerType:'mouse'});event(bs[1],'click',{pointerType:'mouse'});assert.equal(bs[0].getAttribute('aria-pressed'),'true');assert.equal(bs[1].getAttribute('aria-pressed'),'true');await tick();
+ bs[2].click();assert.equal(bs[2].getAttribute('aria-pressed'),'true');bs[2].click();assert.equal(bs[2].getAttribute('aria-pressed'),'false');
+ console.log('PASS legacy mouse click, drag suppression and keyboard activation');
+ await click('[data-action=all-date]');assert.equal(w.document.querySelectorAll('[data-slot][aria-pressed=true]').length,4);await click('[data-action=next-step]');
+ const c=w.document.querySelector('[data-activity]');c.checked=true;c.dispatchEvent(new w.Event('change',{bubbles:true}));fail=true;await click('[data-action=save-vote]');assert(w.document.querySelector('[data-activity]').checked);assert(w.document.querySelector('#notice').textContent.includes('유지'));console.log('PASS save failure preserves draft');
+ fail=false;await click('[data-action=save-vote]');assert.equal(rows.votes.length,2);assert(w.document.body.textContent.includes('모두 가능한 시간을 찾았어요'));console.log('PASS save and shared aggregation');
+ let confirmations=[];w.confirm=message=>{confirmations.push(message);return false;};w.document.querySelector('#finalize').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();assert.equal(p.status,'open');assert(confirmations.at(-1).includes('2명'));assert(!confirmations.at(-1).includes('private'));console.log('PASS fresh conflict count and cancel prevents finalization');
+ calendarFail=true;const before=confirmations.length;w.document.querySelector('#finalize').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();assert.equal(confirmations.length,before);assert.equal(p.status,'open');assert(w.document.querySelector('#notice').textContent.includes('일정 확인에 실패'));console.log('PASS calendar failure blocks finalization');
+ calendarFail=false;calendarRows=[];w.confirm=()=>true;
+ w.document.querySelector('#place').value='중앙공원';w.document.querySelector('#finalize').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();assert.equal(p.status,'finalized');assert(w.document.body.textContent.includes('중앙공원'));assert(!w.document.querySelector('[data-action=save-vote]'));console.log('PASS final appointment and response lock');
+ await click('[data-action=logout]');assert(!w.document.body.textContent.includes('친구 모임'));assert(w.document.body.textContent.includes('언제 만나지'));console.log('PASS logout clears private content');
+ await click('[data-action=auth-signup]');assert.equal(w.document.querySelector('#password').getAttribute('autocomplete'),'new-password');assert(w.document.querySelector('#password2'));console.log('PASS signup fields');
+ const base={...p,status:'open'};const split=[{user_id:'a',slots:['2099-01-03|540','2099-01-03|600'],activities:[],unavailable:false}];assert.equal(core.candidates(base,split,ms)[0].count,0);console.log('PASS noncontinuous availability excluded');
+ const tied=[{user_id:'a',slots:[],activities:['산책'],unavailable:false},{user_id:'b',slots:[],activities:['카페'],unavailable:false}];assert.equal(core.activities(base,tied)[0].count,1);assert.equal(core.activities(base,tied)[1].count,1);console.log('PASS activity ties');
+ dom.window.close();
+})().catch(e=>{console.error(e);process.exitCode=1;dom.window.close();});
+

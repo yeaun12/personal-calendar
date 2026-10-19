@@ -9,7 +9,7 @@ const monthShift=(m,n)=>{const [y,mo]=m.split('-').map(Number);return new Date(D
 let generation=0;
 function reset(){generation++;}
 function mount(root,ctx){
- const gen=++generation;let month=kdate(Date.now()).slice(0,7),day=kdate(Date.now()),target=ctx.user.id,events=[],loading=false,saving=false,request=0;
+ const gen=++generation;let month=kdate(Date.now()).slice(0,7),day=kdate(Date.now()),target=(ctx.members?.some(p=>p.user_id===ctx.initialUser)?ctx.initialUser:ctx.user.id),events=[],loading=false,saving=false,request=0;
  const alive=()=>gen===generation&&root.isConnected;
  const people=ctx.members||[{user_id:ctx.user.id,nickname:ctx.user.user_metadata?.nickname||'나'}];
  const own=()=>target===ctx.user.id;
